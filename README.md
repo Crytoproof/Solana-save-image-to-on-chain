@@ -30,11 +30,7 @@ $ npm run build_simplest
 $ npm run deploy_simplest
 $ npm run save_image -- solana.jpg
 ```
-<p align="center">
-  <a href="https://solana.com">
-    <img alt="Solana" src="https://raw.githubusercontent.com/googlebest/Solana_send_message_to_wallet_via_instruction_data/master/new2.JPG" />
-  </a>
-</p>
+
 
 
 ### To do list:
