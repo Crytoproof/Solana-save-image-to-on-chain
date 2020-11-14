@@ -1,0 +1,220 @@
+<html>
+<head>
+
+  <script src="./solana-web3.js/lib/index.iife.js"></script>   
+
+  
+  <script>
+
+    const ourServer = 'https://165.22.86.204'
+ 
+    const contractProgramAddress = 'CkFsUJDJXWatS8yLL3WZfyoKbTAQGtRNXpswBcfZsbi7'
+    const contractDataAddress = '6VPjctSji8E2hNEh5r3Gkm3kP6EhDjHkuUaeiwoxWhTp'
+
+    const contractProgramPK = new solanaWeb3.PublicKey( contractProgramAddress )
+    const contractDataPK = new solanaWeb3.PublicKey( contractDataAddress )
+
+    const seed = 'checkvote'
+
+    const WALLET = 'voteddemowalletsk'
+
+    var connection
+    var account
+
+    var accountBalance
+    var voteCost
+
+    function skStringToAccount(skString) {
+      return new solanaWeb3.Account( Uint8Array.from(skString.split(',')) )
+    }
+
+    function createCookie(name,value,days) {
+      if (days) {
+        var date = new Date();
+        date.setTime(date.getTime()+(days*24*60*60*1000));
+        var expires = "; expires="+date.toUTCString();
+      }
+      else var expires = "";
+      document.cookie = name+"="+value+expires+"; path=/; SameSite=Strict";
+    }
+
+    function readCookie(name) {
+      var nameEQ = name + "=";
+      var ca = document.cookie.split(';');
+      for(var i=0;i < ca.length;i++) {
+          var c = ca[i];
+          while (c.charAt(0)==' ') c = c.substring(1,c.length);
+          if (c.indexOf(nameEQ) == 0) return c.substring(nameEQ.length,c.length);
+      }
+      return null;
+    }
+
+    function eraseCookie(name) {
+      createCookie(name,"",-1);
+    }
+
+    async function fetchWait (url) {
+      let response = await fetch(url);
+      let data = await response.json();
+      return data;
+    }
+
+    async function fetchCallBack (url, func) {
+      let response = await fetch(url);
+      let data = await response.json();
+      func(data);
+    }
+
+    async function pageload() {
+
+      // User wallet from cookie
+ 
+      if ( ! readCookie(WALLET) ) {
+        const account = new solanaWeb3.Account()
+        createCookie(WALLET,account.secretKey,365)
+      }
+    
+      account = skStringToAccount(readCookie(WALLET))
+      const address = account.publicKey.toString()
+      document.getElementById('address').innerHTML = address
+
+      // account balance via server
+
+      const accountBalanceURL = ourServer + '/accountBalance' + '?address=' + address
+      fetchCallBack(accountBalanceURL, function({balance}) {
+	accountBalance = balance
+        const displayBal = balance + " lamports (" + balance/solanaWeb3.LAMPORTS_PER_SOL + " Sol)"
+        document.getElementById('balance').innerHTML = displayBal
+      })
+
+      // vote counts via server
+
+      const readCountURL = ourServer + '/readCount' + '?contractDataAddress=' + contractDataAddress 
+
+      fetchCallBack(readCountURL, function({vc1,vc2}) {
+        const displayVotes = "Vote counts, Candidate1: " + vc1 + " Candidate2: " + vc2
+        document.getElementById('votes').innerHTML = displayVotes
+      })
+
+
+      // voter status via server
+
+      const checkAccountPubkey = await solanaWeb3.PublicKey.createWithSeed(account.publicKey, seed, contractProgramPK)
+      const voterStatusURL = ourServer + '/voterStatus' + '?voterCheckAddress=' + checkAccountPubkey.toString()
+
+      fetchCallBack(voterStatusURL, function({voted}) {
+        if (voted==1 || voted==2) {
+          document.getElementById('voterStatus').innerHTML = "Dude, you already voted for: " + voted
+        }
+	else if (voted==99) { 
+
+          // vote cost via server 
+
+          const voteCostURL = ourServer + '/voteCost' 
+          fetchCallBack(voteCostURL, function({cost,rent}) {
+            voteCost = cost
+            rentExemption = rent
+            const displayCost = "(democracy costs "+ cost +" lamports, ~"+ cost/solanaWeb3.LAMPORTS_PER_SOL +" Sol)"
+            document.getElementById('voterStatus').innerHTML = "Please do vote " + displayCost
+          })
+	} else {
+	  // voted could == 0 if the check account was made but they havn't voted yet
+	  console.log("Voter check account",checkAccountPubkey.toString(),"created but not voted yet (",voted,")")
+        }
+      })
+    }
+
+
+    async function vote(candidate) {
+
+      if ( voteCost > accountBalance ) {
+        alert("Not enough funds bro, time to get a job?") 
+        return
+      }
+
+
+      // make the everything transaction
+
+      const checkAccountPK = await solanaWeb3.PublicKey.createWithSeed(account.publicKey, seed, contractProgramPK)
+
+      const params = {
+        fromPubkey: account.publicKey,  
+        lamports: rentExemption,      
+        space: 4,                     
+        basePubkey: account.publicKey,  
+        seed,                          
+        programId: contractProgramPK,
+        newAccountPubkey: checkAccountPK,
+      }
+
+      let transaction = solanaWeb3.SystemProgram.createAccountWithSeed( params )
+
+      const instruction_data = new Uint8Array([candidate])
+
+      const instruction = new solanaWeb3.TransactionInstruction({
+        keys: [
+               {pubkey: contractDataPK, isSigner: false, isWritable: true},                     // contract's data account
+               {pubkey: checkAccountPK, isSigner: false, isWritable: true},                     // voter's check-account
+               {pubkey: solanaWeb3.SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false},     // system rent
+               {pubkey: account.publicKey, isSigner: true, isWritable: false}                   // voter account
+            ],
+        programId: contractProgramPK,
+        data: instruction_data,
+      })
+
+      transaction = transaction.add(instruction)
+
+      // assign recent blockhash
+
+      transaction.recentBlockhash = (await fetchWait( ourServer + '/recentBlockhash' )).blockhash
+
+      // sign it
+
+      transaction.sign(account)
+
+      // serialize it
+	    
+      const bytes = transaction.serialize()
+
+      const json = JSON.stringify( bytes )
+
+      // pass it back to the server for dispatch
+
+      const status = await fetchWait( ourServer + '/submitTransaction' + '?transaction=' + json )
+
+      console.log("Status of transaction:", status)
+
+      if ( status.err ) {
+        alert("Sorry, your vote failed: " + status.err)
+        return
+      }
+    }
+
+  </script>
+
+</head>
+<body onload="pageload()">
+
+  <div style="float: left">Address:</div> <div id="address"> </div>
+  <div style="float: left">Balance:</div> <div id="balance"> </div>
+
+  <button onclick="eraseCookie(WALLET); location.reload();">Destroy Wallet</button>
+  <button onclick="alert('['+readCookie(WALLET)+']');">Show Secret Key</button>
+
+  <hr>
+
+  <div id="votes"></div>
+
+  <hr>
+
+  <div id="voterStatus"></div>
+
+  <hr>
+
+  <div>
+    <button onclick="vote(1);">Vote Candidate 1</button>
+    <button onclick="vote(2);">Vote Candidate 2</button>
+  </div>
+
+</body>
+</html>
